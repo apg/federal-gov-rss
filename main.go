@@ -30,7 +30,7 @@ const (
 type sheet2rss struct {
 	url string
 
-	mu     *sync.Mutex
+	mu     *sync.RWMutex
 	ready  bool
 	cached []byte
 	digest string
@@ -133,6 +133,7 @@ func (rs *rss) fromCSV(r io.Reader, maxRecords int) error {
 }
 
 func (s *sheet2rss) get() (io.Reader, error) {
+	log.Println("Getting " + s.url)
 	resp, err := http.Get(s.url)
 	if err != nil {
 		return nil, err
@@ -178,12 +179,13 @@ func (s *sheet2rss) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var content []byte
 
-	s.mu.Lock()
+	s.mu.RLock()
 	if s.ready {
 		content = s.cached
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
+	// TODO: use the digest for an ETag, and other fun stuff.
 	if len(content) > 0 {
 		w.Write([]byte(`<?xml version="1.0" encoding="UTF-8" ?>`))
 		w.Write(content)
@@ -195,9 +197,18 @@ func (s *sheet2rss) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func main() {
 	handler := &sheet2rss{
 		url: fmt.Sprintf(sourceFmt, os.Getenv("SPREADSHEET_KEY")),
-		mu:  new(sync.Mutex),
+		mu:  new(sync.RWMutex),
 	}
-	go handler.refresh()
+
+	go func() {
+		handler.refresh()
+		for {
+			select {
+			case <-time.After(30 * time.Minute):
+				handler.refresh()
+			}
+		}
+	}()
 
 	http.Handle("/rss", handler)
 	log.Fatal(http.ListenAndServe(":"+os.Getenv("PORT"), nil))
